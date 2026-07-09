@@ -1,0 +1,384 @@
+{
+  "info": {
+    "_postman_id": "e2e-demo-collection-0001",
+    "name": "JSONPlaceholder E2E Test Example",
+    "description": "An end-to-end example collection covering login -> GET -> POST -> PUT -> DELETE -> negative test flow.\n\nThis collection demonstrates THREE auth modes and TWO token-refresh strategies, both switchable via collection variables so students can compare them without editing any scripts:\n\n- authMode = \"api_key\" | \"jwt\" | \"jwt_refresh\"  (must match AUTH_MODE in main.py)\n- autoRefresh = \"true\" | \"false\"  (automatic silent refresh vs. manual re-login)\n\nSee STUDENT_GUIDE.md for the full walkthrough of what happens in each combination.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "postId", "value": "", "type": "string" },
+    { "key": "baseUrl", "value": "http://127.0.0.1:8000", "type": "string" },
+    { "key": "authMode", "value": "jwt", "type": "string", "description": "Must match AUTH_MODE in main.py: api_key | jwt | jwt_refresh" },
+    { "key": "autoRefresh", "value": "true", "type": "string", "description": "true = pre-request script silently fetches a new token when the stored one is expired/missing. false = requests just fail with 401 until you manually run '0. Login' (or '0b. Refresh Token')." },
+    { "key": "username", "value": "student", "type": "string" },
+    { "key": "password", "value": "student123", "type": "string" },
+    { "key": "apiKey", "value": "student-api-key-123", "type": "string", "description": "Used only when authMode = api_key" },
+    { "key": "accessToken", "value": "", "type": "string" },
+    { "key": "accessTokenExpiry", "value": "", "type": "string", "description": "Epoch ms - when the current accessToken stops being valid" },
+    { "key": "refreshToken", "value": "", "type": "string", "description": "Used only when authMode = jwt_refresh" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Collection-level auth handling - reacts to `authMode` and `autoRefresh`",
+          "// collection variables so a single collection can demo all 3 auth modes",
+          "// and both refresh strategies without touching any per-request script.",
+          "const authMode = pm.collectionVariables.get('authMode') || 'jwt';",
+          "const autoRefresh = pm.collectionVariables.get('autoRefresh') === 'true';",
+          "",
+          "// The login/refresh requests manage their own tokens in their own test",
+          "// scripts - the collection-level script should leave them alone.",
+          "const selfManaged = ['0. Login - Get Token', '0b. Refresh Token'];",
+          "if (selfManaged.includes(pm.info.requestName)) {",
+          "    return;",
+          "}",
+          "",
+          "function applyAuthHeader() {",
+          "    if (authMode === 'api_key') {",
+          "        pm.request.headers.upsert({ key: 'X-API-Key', value: pm.collectionVariables.get('apiKey') });",
+          "    } else {",
+          "        pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + pm.collectionVariables.get('accessToken') });",
+          "    }",
+          "}",
+          "",
+          "function storeTokenResponse(json) {",
+          "    pm.collectionVariables.set('accessToken', json.access_token);",
+          "    pm.collectionVariables.set('accessTokenExpiry', String(Date.now() + json.expires_in * 1000));",
+          "    if (json.refresh_token) {",
+          "        pm.collectionVariables.set('refreshToken', json.refresh_token);",
+          "    }",
+          "}",
+          "",
+          "function login(done) {",
+          "    pm.sendRequest({",
+          "        url: pm.collectionVariables.get('baseUrl') + '/login',",
+          "        method: 'POST',",
+          "        header: { 'Content-Type': 'application/json' },",
+          "        body: {",
+          "            mode: 'raw',",
+          "            raw: JSON.stringify({",
+          "                username: pm.collectionVariables.get('username'),",
+          "                password: pm.collectionVariables.get('password')",
+          "            })",
+          "        }",
+          "    }, function (err, res) {",
+          "        if (!err && res.code === 200) storeTokenResponse(res.json());",
+          "        done();",
+          "    });",
+          "}",
+          "",
+          "function refreshAccessToken(done) {",
+          "    const refreshToken = pm.collectionVariables.get('refreshToken');",
+          "    if (!refreshToken) return login(done);",
+          "    pm.sendRequest({",
+          "        url: pm.collectionVariables.get('baseUrl') + '/token/refresh',",
+          "        method: 'POST',",
+          "        header: { 'Content-Type': 'application/json' },",
+          "        body: { mode: 'raw', raw: JSON.stringify({ refresh_token: refreshToken }) }",
+          "    }, function (err, res) {",
+          "        if (!err && res.code === 200) {",
+          "            storeTokenResponse(res.json());",
+          "            return done();",
+          "        }",
+          "        // Refresh token itself expired/invalid - fall back to a full login",
+          "        login(done);",
+          "    });",
+          "}",
+          "",
+          "if (authMode === 'api_key') {",
+          "    applyAuthHeader();",
+          "} else {",
+          "    const expiry = parseInt(pm.collectionVariables.get('accessTokenExpiry') || '0', 10);",
+          "    const isExpired = !pm.collectionVariables.get('accessToken') || Date.now() >= expiry;",
+          "",
+          "    if (isExpired && autoRefresh) {",
+          "        if (authMode === 'jwt_refresh') {",
+          "            refreshAccessToken(applyAuthHeader);",
+          "        } else {",
+          "            login(applyAuthHeader);",
+          "        }",
+          "    } else {",
+          "        applyAuthHeader();",
+          "    }",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Manual-refresh mode has no auto-recovery, so give the student a clear",
+          "// pointer instead of a bare 401 in the console.",
+          "if (pm.response.code === 401 && pm.collectionVariables.get('autoRefresh') !== 'true') {",
+          "    const authMode = pm.collectionVariables.get('authMode');",
+          "    const hint = authMode === 'jwt_refresh'",
+          "        ? \"Run '0b. Refresh Token' (or '0. Login - Get Token') then retry.\"",
+          "        : \"Run '0. Login - Get Token' then retry.\";",
+          "    console.warn('401 Unauthorized - token missing or expired. ' + hint);",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Login - Get Token",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/login",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "login" ]
+        },
+        "description": "Not used in api_key mode - the API returns 404 (there's nothing to log in for, you just send X-API-Key). In jwt / jwt_refresh mode this is the manual equivalent of what the pre-request script does automatically when autoRefresh = true."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code should be 200 (unless authMode = api_key)\", function () {",
+              "    if (pm.collectionVariables.get(\"authMode\") === \"api_key\") {",
+              "        pm.response.to.have.status(404);",
+              "        return;",
+              "    }",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "if (pm.response.code === 200) {",
+              "    var jsonData = pm.response.json();",
+              "    pm.collectionVariables.set(\"accessToken\", jsonData.access_token);",
+              "    pm.collectionVariables.set(\"accessTokenExpiry\", String(Date.now() + jsonData.expires_in * 1000));",
+              "    if (jsonData.refresh_token) {",
+              "        pm.collectionVariables.set(\"refreshToken\", jsonData.refresh_token);",
+              "    }",
+              "    pm.test(\"Response should contain an access_token\", function () {",
+              "        pm.expect(jsonData).to.have.property(\"access_token\");",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "0b. Refresh Token",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/token/refresh",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "token", "refresh" ]
+        },
+        "description": "Only enabled when authMode = jwt_refresh (returns 404 in the other two modes). Exchanges the long-lived refresh token for a brand new access token, without re-sending username/password. This is what a real client would call once the 3-day access token expires."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.collectionVariables.get(\"authMode\") !== \"jwt_refresh\") {",
+              "    pm.test(\"Returns 404 outside jwt_refresh mode\", function () {",
+              "        pm.response.to.have.status(404);",
+              "    });",
+              "} else {",
+              "    pm.test(\"Status code should be 200\", function () {",
+              "        pm.response.to.have.status(200);",
+              "    });",
+              "    var jsonData = pm.response.json();",
+              "    pm.collectionVariables.set(\"accessToken\", jsonData.access_token);",
+              "    pm.collectionVariables.set(\"accessTokenExpiry\", String(Date.now() + jsonData.expires_in * 1000));",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. GET - Fetch a Post",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/posts/1",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "posts", "1" ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code should be 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test(\"Required fields should be present\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property(\"id\");",
+              "    pm.expect(jsonData).to.have.property(\"title\");",
+              "    pm.expect(jsonData).to.have.property(\"userId\");",
+              "});",
+              "",
+              "pm.test(\"Response time should be below 2000ms\", function () {",
+              "    pm.expect(pm.response.responseTime).to.be.below(2000);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. POST - Create a New Post",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Postman E2E Test Post\",\n  \"body\": \"This content was created by an automated test.\",\n  \"userId\": 1\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/posts",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "posts" ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code should be 201\", function () {",
+              "    pm.response.to.have.status(201);",
+              "});",
+              "",
+              "pm.test(\"Created post should contain an id\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property(\"id\");",
+              "    pm.collectionVariables.set(\"postId\", jsonData.id);",
+              "});",
+              "",
+              "pm.test(\"Submitted title should be echoed back correctly\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.title).to.eql(\"Postman E2E Test Post\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. PUT - Update the Post",
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": 1,\n  \"title\": \"Updated Title\",\n  \"body\": \"Updated content\",\n  \"userId\": 1\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/posts/1",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "posts", "1" ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code should be 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test(\"Title should be updated\", function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.title).to.eql(\"Updated Title\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. DELETE - Delete the Post",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/posts/1",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "posts", "1" ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code should be 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. GET - Negative Test (Non-existent Resource)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/posts/99999",
+          "host": [ "{{baseUrl}}" ],
+          "path": [ "posts", "99999" ]
+        },
+        "description": "ID 99999 does not exist in the local API, so a 404 is expected."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Non-existent resource should return 404\", function () {",
+              "    pm.response.to.have.status(404);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
